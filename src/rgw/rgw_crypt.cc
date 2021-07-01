@@ -909,9 +909,9 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 
   {
     /* Checking bucket attributes if SSE is enabled. Currently only supporting SS#-S3 */
-    rgw::sal::Attrs attrs(s->bucket_attrs);
-    auto aiter = attrs.find(RGW_ATTR_BUCKET_ENCRYPTION); 
-    if (aiter == attrs.end()) {
+    rgw::sal::Attrs buck_attrs(s->bucket_attrs);
+    auto aiter = buck_attrs.find(RGW_ATTR_BUCKET_ENCRYPTION); 
+    if (aiter == buck_attrs.end()) {
       ldpp_dout(s, 5) << "PRIYA: can't find RGW_ATTR_BUCKET_ENCRYPTION attr bucket_name = " << s->bucket_name << dendl;
     } else {
       ldpp_dout(s, 5) << "PRIYA: found RGW_ATTR_BUCKET_ENCRYPTION attr bucket_name = " << s->bucket_name << dendl;
@@ -922,15 +922,24 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	if (bucket_encryption_conf.sse_algorithm() == "AES256") {
 	  ldpp_dout(s, 5) << "PRIYA: ALGO: " <<  bucket_encryption_conf.sse_algorithm() << dendl;
 	  ldpp_dout(s, 5) << "PRIYA: KEY " <<  bucket_encryption_conf.kms_master_key_id() << dendl;
+	  std::string_view context = "";
+          std::string cooked_context;
+	  if ((res = make_canonical_context(s, context, cooked_context)))
+	    return res;
+
 	  //key_id = bucket_encryption_conf.kms_master_key_id();
 	  std::string_view key_id = s->bucket->get_info().owner.id; // TODO - DELETE this
+	  std::string key_selector = create_random_key_selector(s->cct);
+
+	  set_attr(attrs, RGW_ATTR_CRYPT_KEYSEL, key_selector);
+	  set_attr(attrs, RGW_ATTR_CRYPT_CONTEXT, cooked_context);
 	  set_attr(attrs, RGW_ATTR_CRYPT_MODE, "AES256");
 	  set_attr(attrs, RGW_ATTR_CRYPT_KEYID, key_id);
 	  std::string actual_key;
 	  res = make_actual_key_from_sse_s3(s->cct, attrs, actual_key);
           if (res != 0) {
 	    ldpp_dout(s, 5) << "ERROR: failed to retrieve actual key from key_id: " << key_id << dendl;
-	    s->err.message = "Failed to retrieve the actual key, kms-keyid: " + std::string(key_id);
+	    s->err.message = "Failed to retrieve the actual key " ;
 	    return res;
 	  }
 	  if (actual_key.size() != AES_256_KEYSIZE) {
@@ -948,7 +957,6 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
           ::ceph::crypto::zeroize_for_security(actual_key.data(), actual_key.length());
 
 	  crypt_http_responses["x-amz-server-side-encryption"] = "AES256";
-	  crypt_http_responses["x-amz-server-side-encryption-key-id"] = std::string(key_id);
 
 	  return 0;
 	} else {
@@ -1200,8 +1208,8 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
                        std::map<std::string, std::string>& crypt_http_responses)
 {
   int res = 0;
-  ldpp_dout(s, 5) << "PRIYA: Inside prepare_decrypt " << dendl;
   std::string stored_mode = get_str_attribute(attrs, RGW_ATTR_CRYPT_MODE);
+  ldpp_dout(s, 5) << "PRIYA: Inside prepare_decrypt. Mode:  " << stored_mode << dendl;
   ldpp_dout(s, 15) << "Encryption mode: " << stored_mode << dendl;
 
   const char *req_sse = s->info.env->get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION", NULL);
@@ -1359,6 +1367,40 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
     if (block_crypt) *block_crypt = std::move(aes);
     return 0;
   }
+
+  /* SSE-S3 */
+  if (stored_mode == "AES256") {
+    if (s->cct->_conf->rgw_crypt_require_ssl &&
+        !rgw_transport_is_secure(s->cct, *s->info.env)) {
+      ldpp_dout(s, 5) << "ERROR: Insecure request, rgw_crypt_require_ssl is set" << dendl;
+      return -ERR_INVALID_REQUEST;
+    }
+    /* try to retrieve actual key */
+    std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
+    std::string actual_key;
+    res = reconstitute_actual_key_from_sse_s3(s->cct, attrs, actual_key);
+    if (res != 0) {
+      ldpp_dout(s, 10) << "ERROR: failed to retrieve actual key  " << dendl;
+      s->err.message = "Failed to retrieve the actual key " ;
+      return res;
+    }
+    if (actual_key.size() != AES_256_KEYSIZE) {
+      ldpp_dout(s, 0) << "ERROR: key obtained " <<
+          " is not 256 bit size" << dendl;
+      s->err.message = "SSE-S3  provided an invalid key for the given keyid.";
+      return -ERR_INVALID_ACCESS_KEY;
+    }
+
+    auto aes = std::unique_ptr<AES_256_CBC>(new AES_256_CBC(s->cct));
+    aes->set_key(reinterpret_cast<const uint8_t*>(actual_key.c_str()), AES_256_KEYSIZE);
+    actual_key.replace(0, actual_key.length(), actual_key.length(), '\000');
+    if (block_crypt) *block_crypt = std::move(aes);
+
+    crypt_http_responses["x-amz-server-side-encryption"] = "AES256";
+    return 0;
+  }
+
+
   /*no decryption*/
   return 0;
 }

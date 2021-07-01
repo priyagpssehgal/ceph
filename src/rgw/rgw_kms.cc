@@ -1011,13 +1011,13 @@ public:
    return cct->_conf->rgw_crypt_sse_s3_backend;
   };
   std::string & addr() override {
-    return cct->_conf->rgw_crypt_sse_s3_vault_auth;
+    return cct->_conf->rgw_crypt_sse_s3_vault_addr;
   };
   std::string & auth() override {
     return cct->_conf->rgw_crypt_sse_s3_vault_auth;
   };
   std::string & k_namespace() override {
-    return cct->_conf->rgw_crypt_sse_s3_vault_auth;
+    return cct->_conf->rgw_crypt_sse_s3_vault_namespace;
   };
   std::string & prefix() override {
     return cct->_conf->rgw_crypt_sse_s3_vault_prefix;
@@ -1094,7 +1094,7 @@ int reconstitute_actual_key_from_sse_s3(CephContext *cct,
   SseS3Context kctx { cct };
   std::string &kms_backend { kctx.backend() };
 
-  ldout(cct, 20) << "Getting KMS encryption key for key " << key_id << dendl;
+  ldout(cct, 20) << "Getting SSE-S3  encryption key for key " << key_id << dendl;
   ldout(cct, 20) << "SSE-KMS backend is " << kms_backend << dendl;
 
   if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend) {
