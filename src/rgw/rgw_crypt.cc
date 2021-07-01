@@ -16,6 +16,7 @@
 #include "crypto/crypto_accel.h"
 #include "crypto/crypto_plugin.h"
 #include "rgw/rgw_kms.h"
+#include "rgw/rgw_bucket_encryption.h"
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/error/error.h"
@@ -904,7 +905,64 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 {
   int res = 0;
   crypt_http_responses.clear();
+  ldpp_dout(s, 5) << "PRIYA: Inside prepare_encrypt " << dendl;
+
   {
+    /* Checking bucket attributes if SSE is enabled. Currently only supporting SS#-S3 */
+    rgw::sal::Attrs attrs(s->bucket_attrs);
+    auto aiter = attrs.find(RGW_ATTR_BUCKET_ENCRYPTION); 
+    if (aiter == attrs.end()) {
+      ldpp_dout(s, 5) << "PRIYA: can't find RGW_ATTR_BUCKET_ENCRYPTION attr bucket_name = " << s->bucket_name << dendl;
+    } else {
+      ldpp_dout(s, 5) << "PRIYA: found RGW_ATTR_BUCKET_ENCRYPTION attr bucket_name = " << s->bucket_name << dendl;
+      bufferlist::const_iterator iter{&aiter->second};
+      try {
+        RGWBucketEncryptionConfig bucket_encryption_conf;
+	bucket_encryption_conf.decode(iter);
+	if (bucket_encryption_conf.sse_algorithm() == "AES256") {
+	  ldpp_dout(s, 5) << "PRIYA: ALGO: " <<  bucket_encryption_conf.sse_algorithm() << dendl;
+	  ldpp_dout(s, 5) << "PRIYA: KEY " <<  bucket_encryption_conf.kms_master_key_id() << dendl;
+	  //key_id = bucket_encryption_conf.kms_master_key_id();
+	  std::string_view key_id = s->bucket->get_info().owner.id; // TODO - DELETE this
+	  set_attr(attrs, RGW_ATTR_CRYPT_MODE, "AES256");
+	  set_attr(attrs, RGW_ATTR_CRYPT_KEYID, key_id);
+	  std::string actual_key;
+	  res = make_actual_key_from_sse_s3(s->cct, attrs, actual_key);
+          if (res != 0) {
+	    ldpp_dout(s, 5) << "ERROR: failed to retrieve actual key from key_id: " << key_id << dendl;
+	    s->err.message = "Failed to retrieve the actual key, kms-keyid: " + std::string(key_id);
+	    return res;
+	  }
+	  if (actual_key.size() != AES_256_KEYSIZE) {
+	    ldpp_dout(s, 5) << "ERROR: key obtained from key_id:" <<
+                           key_id << " is not 256 bit size" << dendl;
+	    s->err.message = "KMS provided an invalid key for the given kms-keyid.";
+	    return -ERR_INVALID_ACCESS_KEY;
+	  }
+
+          if (block_crypt) {
+	    auto aes = std::unique_ptr<AES_256_CBC>(new AES_256_CBC(s->cct));
+	    aes->set_key(reinterpret_cast<const uint8_t*>(actual_key.c_str()), AES_256_KEYSIZE);
+	    *block_crypt = std::move(aes);
+	  }
+          ::ceph::crypto::zeroize_for_security(actual_key.data(), actual_key.length());
+
+	  crypt_http_responses["x-amz-server-side-encryption"] = "AES256";
+	  crypt_http_responses["x-amz-server-side-encryption-key-id"] = std::string(key_id);
+
+	  return 0;
+	} else {
+          ldpp_dout(s, 5) << "ERROR: SSE algorithm: " 
+		  <<  bucket_encryption_conf.sse_algorithm() 
+		  << " not supported" << dendl;
+	  s->err.message = "The requested encryption algorithm is not valid, must be AES256.";
+	  return -ERR_INVALID_ENCRYPTION_ALGORITHM;
+	}
+      } catch (const buffer::error& e) {
+        ldpp_dout(s, 5) << __func__ <<  "decode bucket_encryption_conf failed" << dendl;
+      }
+    }
+
     std::string_view req_sse_ca =
         get_crypt_attribute(s->info.env, parts, X_AMZ_SERVER_SIDE_ENCRYPTION_CUSTOMER_ALGORITHM);
     if (! req_sse_ca.empty()) {
@@ -1142,6 +1200,7 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
                        std::map<std::string, std::string>& crypt_http_responses)
 {
   int res = 0;
+  ldpp_dout(s, 5) << "PRIYA: Inside prepare_decrypt " << dendl;
   std::string stored_mode = get_str_attribute(attrs, RGW_ATTR_CRYPT_MODE);
   ldpp_dout(s, 15) << "Encryption mode: " << stored_mode << dendl;
 
