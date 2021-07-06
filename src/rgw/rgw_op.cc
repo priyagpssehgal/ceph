@@ -51,6 +51,7 @@
 #include "rgw_notify_event_type.h"
 #include "rgw_sal.h"
 #include "rgw_sal_rados.h"
+#include "rgw_kms.h"
 
 #include "services/svc_zone.h"
 #include "services/svc_quota.h"
@@ -8168,6 +8169,16 @@ void RGWPutBucketEncryption::execute(optional_yield y)
 
   bufferlist bl;
   bucket_encryption_conf.encode(bl);
+
+  std::string kek_id = s->bucket->get_info().owner.id; //TODO- Save this in a field and encode
+  ldpp_dout(this, 5) << "PRIYA: Generating KEK" << kek_id << dendl;
+  op_ret = generate_kek_sse_s3(s->cct, kek_id);
+  if (op_ret < 0) {
+    ldpp_dout(this, 20) << "Generate KEK returned =" << op_ret << dendl;
+    return;
+  }
+  ldpp_dout(this, 5) << "PRIYA: Generated KEK" << kek_id << dendl;
+
   op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this, &bl] {
       rgw::sal::Attrs attrs(s->bucket_attrs);
       attrs[RGW_ATTR_BUCKET_ENCRYPTION] = bl;
