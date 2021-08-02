@@ -12,6 +12,7 @@ static const std::string RGW_SSE_KMS_BACKEND_TESTING = "testing";
 static const std::string RGW_SSE_KMS_BACKEND_BARBICAN = "barbican";
 static const std::string RGW_SSE_KMS_BACKEND_VAULT = "vault";
 static const std::string RGW_SSE_KMS_BACKEND_KMIP = "kmip";
+static const std::string RGW_SSE_KMS_BACKEND_CRYPTEX = "cryptex";
 
 static const std::string RGW_SSE_KMS_VAULT_AUTH_TOKEN = "token";
 static const std::string RGW_SSE_KMS_VAULT_AUTH_AGENT = "agent";

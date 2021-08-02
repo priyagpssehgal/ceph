@@ -2713,6 +2713,84 @@ options:
   - vault
   - testing
   - kmip
+  - cryptex
+  with_legacy: true
+- name: rgw_cryptex_sse_s3_auth
+  type: str
+  level: advanced
+  desc: Type of authentication method to be used with SSE-S3 and Cryptex.
+  fmt_desc: Type of authentication method to be used. The only method
+    currently supported is ``token``.
+  default: token
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_sse_s3_backend
+  - rgw_cryptex_sse_s3_addr
+  enum_values:
+  - token
+  - agent
+  with_legacy: true
+- name: rgw_cryptex_sse_s3_addr
+  type: str
+  level: advanced
+  desc: SSE-S3 Cryptex server base address.
+  fmt_desc: Cryptex server base address, e.g. ``http://vaultserver:8200``.
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_sse_s3_backend
+  - rgw_cryptex_sse_s3_auth
+  - rgw_cryptex_sse_s3_prefix
+  with_legacy: true
+# Optional URL prefix to Vault secret path
+- name: rgw_cryptex_sse_s3_prefix
+  type: str
+  level: advanced
+  desc: SSE-S3 Cryptex secret URL prefix, which can be used to restrict access to a particular
+    subset of the Vault secret space.
+  fmt_desc: The cryptex secret URL prefix, which can be used to restrict access
+    to a particular subset of the secret space, e.g. ``/v1/secret/data``.
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_sse_s3_backend
+  - rgw_cryptex_sse_s3_addr
+  - rgw_cryptex_sse_s3_auth
+  with_legacy: true
+- name: rgw_cryptex_authn_addr
+  type: str
+  level: advanced
+  desc: Authn server base address.
+  fmt_desc: Auhtn server base address
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_sse_s3_backend
+  - rgw_cryptex_sse_s3_auth
+  - rgw_cryptex_sse_s3_prefix
+  with_legacy: true
+- name: rgw_cryptex_authn_client_id
+  type: str
+  level: advanced
+  desc: Authn client id.
+  fmt_desc: Auhtn client id
+  services:
+  - rgw
+  see_also:
+  - rgw_cryptex_authn_addr
+  - rgw_cryptex_authn_client_secret
+  with_egacy: true
+- name: rgw_cryptex_authn_client_secret
+  type: str
+  level: advanced
+  desc: Authn server client secret.
+  fmt_desc: Auhtn server client secret (encrypted)
+  services:
+  - rgw
+  see_also:
+  - rgw_cryptex_authn_addr
+  - rgw_cryptex_authn_client_id
   with_legacy: true
 
 - name: rgw_crypt_sse_s3_vault_auth

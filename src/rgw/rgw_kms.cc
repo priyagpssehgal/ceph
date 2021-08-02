@@ -937,6 +937,14 @@ static int get_actual_key_from_vault(CephContext *cct,
   }
 }
 
+static int make_actual_key_from_cryptex(CephContext *cct,
+                                     map<string, bufferlist>& attrs,
+                                     std::string& actual_key)
+{
+    CryptexContext kctx { cct };
+    //return get_actual_key_from_vault(cct, kctx, attrs, actual_key, true);
+    return 0;
+}
 
 static int make_actual_key_from_vault(CephContext *cct,
                                      SSEContext & kctx,
@@ -1053,6 +1061,34 @@ public:
 };
 const std::string SseS3Context::sse_s3_secret_engine = "transit";
 
+class CryptexContext : public SSEContext {
+  CephContext *cct;
+public:
+  CryptexContext(CephContext*_cct) : cct{_cct} {};
+  ~CryptexContext() override {};
+  const std::string & backend() override {
+   return cct->_conf->rgw_crypt_sse_s3_backend;
+  };
+  const std::string & addr() override {
+    return cct->_conf->rgw_cryptex_sse_s3_addr;
+  };
+  const std::string & auth() override {
+    return cct->_conf->rgw_cryptex_sse_s3_auth;
+  };
+  const std::string & prefix() override {
+    return cct->_conf->rgw_cryptex_sse_s3_prefix;
+  };
+  const std::string & authn_addr() {
+    return cct->_conf->rgw_cryptex_authn_addr;
+  };
+  const std::string & authn_client_id() {
+    return cct->_conf->rgw_cryptex_authn_client_id;
+  };
+  const std::string & authn_client_secret() {
+    return cct->_conf->rgw_cryptex_authn_client_secret;
+  };
+};
+
 int reconstitute_actual_key_from_kms(CephContext *cct,
                             map<string, bufferlist>& attrs,
                             std::string& actual_key)
@@ -1121,6 +1157,10 @@ int make_actual_key_from_sse_s3(CephContext *cct,
 {
   SseS3Context kctx { cct };
   const std::string kms_backend { kctx.backend() };
+  if (RGW_SSE_KMS_BACKEND_CRYPTEX == kms_backend) {
+    ldout(cct, 0) << "INFO: Backend preparing sse_s3 key  " << kms_backend << dendl;
+    return make_actual_key_from_cryptex(cct, attrs, actual_key);;
+  }
   if (RGW_SSE_KMS_BACKEND_VAULT != kms_backend) {
     ldout(cct, 0) << "ERROR: Unsupported rgw_crypt_s3_backend: " << kms_backend << dendl;
     return -EINVAL;
