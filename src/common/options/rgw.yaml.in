@@ -2758,6 +2758,20 @@ options:
   - rgw_cryptex_sse_s3_addr
   - rgw_cryptex_sse_s3_auth
   with_legacy: true
+- name: rgw_cryptex_sse_s3_namespace
+  type: str
+  level: advanced
+  desc: Vault Namespace to be used to select your tenant
+  fmt_desc: If set, Vault Namespace provides tenant isolation for teams and individuals
+    on the same Vault Enterprise instance, e.g. ``acme/tenant1``
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_sse_s3_backend
+  - rgw_cryptex_sse_s3_auth
+  - rgw_cryptex_sse_s3_addr
+  with_legacy: true
+
 - name: rgw_cryptex_authn_addr
   type: str
   level: advanced
@@ -2770,6 +2784,27 @@ options:
   - rgw_cryptex_sse_s3_auth
   - rgw_cryptex_sse_s3_prefix
   with_legacy: true
+- name: rgw_cryptex_sse_s3_token_file
+  type: str
+  level: advanced
+  desc: If authentication method is 'token', provide a path to the token file, which
+    for security reasons should readable only by Rados Gateway.
+  services:
+  - rgw
+  see_also:
+  - rgw_cryptex_sse_s3_backend
+  - rgw_cryptex_sse_s3_auth
+  - rgw_cryptex_sse_s3_addr
+  with_legacy: true
+- name: rgw_cryptex_sse_s3_verify_ssl
+  type: bool
+  level: advanced
+  desc: Should RGW verify the Cryptex server SSL certificate.
+  default: false
+  services:
+  - rgw
+  with_legacy: true
+
 - name: rgw_cryptex_authn_client_id
   type: str
   level: advanced
@@ -2780,7 +2815,7 @@ options:
   see_also:
   - rgw_cryptex_authn_addr
   - rgw_cryptex_authn_client_secret
-  with_egacy: true
+  with_legacy: true
 - name: rgw_cryptex_authn_client_secret
   type: str
   level: advanced

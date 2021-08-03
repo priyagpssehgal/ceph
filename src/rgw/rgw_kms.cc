@@ -177,6 +177,57 @@ public:
   virtual const bool verify_ssl() = 0;
 };
 
+class CryptexContext : public SSEContext {
+  CephContext *cct;
+public:
+  static const std::string sse_s3_secret_engine;
+  CryptexContext(CephContext*_cct) : cct{_cct} {};
+  ~CryptexContext() override {};
+  const std::string & backend() override {
+   return cct->_conf->rgw_crypt_sse_s3_backend;
+  };
+  const std::string & addr() override {
+    return cct->_conf->rgw_cryptex_sse_s3_addr;
+  };
+  const std::string & auth() override {
+    return cct->_conf->rgw_cryptex_sse_s3_auth;
+  };
+  const std::string & prefix() override {
+    return cct->_conf->rgw_cryptex_sse_s3_prefix;
+  };
+  const std::string & token_file() override {
+    return cct->_conf->rgw_cryptex_sse_s3_token_file;
+  };
+  const bool verify_ssl() override {
+    return cct->_conf->rgw_cryptex_sse_s3_verify_ssl;
+  };
+  const std::string & k_namespace() override {
+    return cct->_conf->rgw_cryptex_sse_s3_namespace;
+  };
+  const std::string & authn_addr() {
+    return cct->_conf->rgw_cryptex_authn_addr;
+  };
+  const std::string & authn_client_id() {
+    return cct->_conf->rgw_cryptex_authn_client_id;
+  };
+  const std::string & authn_client_secret() {
+    return cct->_conf->rgw_cryptex_authn_client_secret;
+  };
+  const std::string & secret_engine() override {
+    return sse_s3_secret_engine;
+  };
+  const std::string & ssl_cacert() override {
+    return cct->_conf->rgw_crypt_sse_s3_vault_ssl_cacert;
+  };
+  const std::string & ssl_clientcert() override {
+    return cct->_conf->rgw_crypt_sse_s3_vault_ssl_clientcert;
+  };
+  const std::string & ssl_clientkey() override {
+    return cct->_conf->rgw_crypt_sse_s3_vault_ssl_clientkey;
+  };
+};
+const std::string CryptexContext::sse_s3_secret_engine = "transit";
+
 class VaultSecretEngine: public SecretEngine {
 
 protected:
@@ -323,6 +374,326 @@ public:
   VaultSecretEngine(CephContext *_c, SSEContext & _k) : cct(_c), kctx(_k) {
   }
 };
+
+class CryptexSecretEngine: public SecretEngine {
+
+protected:
+  CephContext *cct;
+  CryptexContext & kctx;
+/*
+  int load_token_from_file(std::string *vault_token)
+  {
+
+    int res = 0;
+    std::string token_file = kctx.token_file();
+    if (token_file.empty()) {
+      ldout(cct, 0) << "ERROR: Vault token file not set in rgw_crypt_vault_token_file" << dendl;
+      return -EINVAL;
+    }
+    ldout(cct, 20) << "Vault token file: " << token_file << dendl;
+
+    struct stat token_st;
+    if (stat(token_file.c_str(), &token_st) != 0) {
+      ldout(cct, 0) << "ERROR: Vault token file '" << token_file << "' not found  " << dendl;
+      return -ENOENT;
+    }
+
+    if (token_st.st_mode & (S_IRWXG | S_IRWXO)) {
+      ldout(cct, 0) << "ERROR: Vault token file '" << token_file << "' permissions are "
+                    << "too open, it must not be accessible by other users" << dendl;
+      return -EACCES;
+    }
+
+    char buf[2048];
+    res = safe_read_file("", token_file.c_str(), buf, sizeof(buf));
+    if (res < 0) {
+      if (-EACCES == res) {
+        ldout(cct, 0) << "ERROR: Permission denied reading Vault token file" << dendl;
+      } else {
+        ldout(cct, 0) << "ERROR: Failed to read Vault token file with error " << res << dendl;
+      }
+      return res;
+    }
+    // drop trailing newlines
+    while (res && isspace(buf[res-1])) {
+      --res;
+    }
+    vault_token->assign(std::string{buf, static_cast<size_t>(res)});
+    memset(buf, 0, sizeof(buf));
+    ::ceph::crypto::zeroize_for_security(buf, sizeof(buf));
+    return res;
+  }
+
+  int send_request(const char *method, std::string_view infix,
+    std::string_view key_id,
+    const std::string& postdata,
+    bufferlist &secret_bl)
+  {
+    int res;
+    string vault_token = "";
+    if (RGW_SSE_KMS_VAULT_AUTH_TOKEN == kctx.auth()){
+      ldout(cct, 0) << "Loading Vault Token from filesystem" << dendl;
+      res = load_token_from_file(&vault_token);
+      if (res < 0){
+        return res;
+      }
+    }
+
+    std::string secret_url = kctx.addr();
+    if (secret_url.empty()) {
+      ldout(cct, 0) << "ERROR: Vault address not set in rgw_crypt_vault_addr" << dendl;
+      return -EINVAL;
+    }
+
+    concat_url(secret_url, kctx.prefix());
+    concat_url(secret_url, std::string(infix));
+    concat_url(secret_url, std::string(key_id));
+
+    RGWHTTPTransceiver secret_req(cct, method, secret_url, &secret_bl);
+
+    if (postdata.length()) {
+      secret_req.set_post_data(postdata);
+      secret_req.set_send_length(postdata.length());
+    }
+
+    secret_req.append_header("X-Vault-Token", vault_token);
+    if (!vault_token.empty()){
+      secret_req.append_header("X-Vault-Token", vault_token);
+      vault_token.replace(0, vault_token.length(), vault_token.length(), '\000');
+    }
+
+    string vault_namespace = kctx.k_namespace();
+    if (!vault_namespace.empty()){
+      ldout(cct, 20) << "Vault Namespace: " << vault_namespace << dendl;
+      secret_req.append_header("X-Vault-Namespace", vault_namespace);
+    }
+
+    secret_req.set_verify_ssl(kctx.verify_ssl());
+
+    if (!kctx.ssl_cacert().empty()) {
+      secret_req.set_ca_path(kctx.ssl_cacert());
+    }
+
+    if (!kctx.ssl_clientcert().empty()) {
+      secret_req.set_client_cert(kctx.ssl_clientcert());
+    }
+    if (!kctx.ssl_clientkey().empty()) {
+      secret_req.set_client_key(kctx.ssl_clientkey());
+    }
+
+    res = secret_req.process(null_yield);
+    if (res < 0) {
+      ldout(cct, 0) << "ERROR: Request to Vault failed with error " << res << dendl;
+      return res;
+    }
+
+    if (secret_req.get_http_status() ==
+        RGWHTTPTransceiver::HTTP_STATUS_UNAUTHORIZED) {
+      ldout(cct, 0) << "ERROR: Vault request failed authorization" << dendl;
+      return -EACCES;
+    }
+
+    ldout(cct, 20) << "Request to Vault returned " << res << " and HTTP status "
+      << secret_req.get_http_status() << dendl;
+
+    return res;
+  }
+
+  int send_request(std::string_view key_id, bufferlist &secret_bl)
+  {
+    return send_request("GET", "", key_id, string{}, secret_bl);
+  }
+
+  int decode_secret(std::string encoded, std::string& actual_key){
+    try {
+      actual_key = from_base64(encoded);
+    } catch (std::exception&) {
+      ldout(cct, 0) << "ERROR: Failed to base64 decode key retrieved from Vault" << dendl;
+      return -EINVAL;
+    }
+    memset(encoded.data(), 0, encoded.length());
+    return 0;
+  }
+*/
+public:
+
+  CryptexSecretEngine(CephContext *_c, CryptexContext & _k) : cct(_c), kctx(_k) {
+    string vault_namespace = kctx.k_namespace();
+    if (!vault_namespace.empty()){
+      ldout(cct, 20) << "Vault Namespace: " << vault_namespace << dendl;
+    }
+    string authn_addr = kctx.authn_addr();
+    if (!authn_addr.empty()){
+      ldout(cct, 20) << "Authn Addr: " << authn_addr << dendl;
+    }
+
+  }
+
+  int get_key(std::string_view key_id, std::string& actual_key){
+    return 0;
+  }
+#if 0
+  int make_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
+  {
+    std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
+/*
+	data: {context }
+	post to prefix + /datakey/plaintext/ + key_id
+	jq: .data.plaintext	-> key
+	jq: .data.ciphertext	-> (to-be) named attribute
+    return decode_secret(json_obj, actual_key)
+*/
+    std::string context = get_str_attribute(attrs, RGW_ATTR_CRYPT_CONTEXT);
+    ZeroPoolDocument d { rapidjson::kObjectType };
+    auto &allocator { d.GetAllocator() };
+    bufferlist secret_bl;
+
+    add_name_val_to_obj("context", context, d, allocator);
+    rapidjson::StringBuffer buf;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
+    if (!d.Accept(writer)) {
+      ldout(cct, 0) << "ERROR: can't make json for vault" << dendl;
+      return -EINVAL;
+    }
+    std::string post_data { buf.GetString() };
+
+    int res = send_request("POST", "/datakey/plaintext/", key_id,
+	post_data, secret_bl);
+    if (res < 0) {
+      return res;
+    }
+
+    ldout(cct, 20) << "Parse response into JSON Object" << dendl;
+
+    secret_bl.append('\0');
+    rapidjson::StringStream isw(secret_bl.c_str());
+    d.SetNull();
+    d.ParseStream<>(isw);
+
+    if (d.HasParseError()) {
+      ldout(cct, 0) << "ERROR: Failed to parse JSON response from Vault: "
+	 << rapidjson::GetParseError_En(d.GetParseError()) << dendl;
+      return -EINVAL;
+    }
+    secret_bl.zero();
+
+    if (!d.IsObject()) {
+      ldout(cct, 0) << "ERROR: response from Vault is not an object" << dendl;
+      return -EINVAL;
+    }
+    {
+      auto data_itr { d.FindMember("data") };
+      if (data_itr == d.MemberEnd()) {
+	ldout(cct, 0) << "ERROR: no .data in response from Vault" << dendl;
+        return -EINVAL;
+      }
+      auto ciphertext_itr { data_itr->value.FindMember("ciphertext") };
+      auto plaintext_itr { data_itr->value.FindMember("plaintext") };
+      if (ciphertext_itr == data_itr->value.MemberEnd()) {
+	ldout(cct, 0) << "ERROR: no .data.ciphertext in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      if (plaintext_itr == data_itr->value.MemberEnd()) {
+	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      auto &ciphertext_v { ciphertext_itr->value };
+      auto &plaintext_v { plaintext_itr->value };
+      if (!ciphertext_v.IsString()) {
+	ldout(cct, 0) << "ERROR: .data.ciphertext not a string in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      if (!plaintext_v.IsString()) {
+	ldout(cct, 0) << "ERROR: .data.plaintext not a string in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      set_attr(attrs, RGW_ATTR_CRYPT_DATAKEY, ciphertext_v.GetString());
+      return decode_secret(plaintext_v.GetString(), actual_key);
+    }
+  }
+
+  int reconstitute_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
+  {
+    std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
+    std::string wrapped_key = get_str_attribute(attrs, RGW_ATTR_CRYPT_DATAKEY);
+/*
+	.data.ciphertext <- (to-be) named attribute
+	data: {context ciphertext}
+	post to prefix + /decrypt/ + key_id
+	jq: .data.plaintext
+    return decode_secret(json_obj, actual_key)
+*/
+    std::string context = get_str_attribute(attrs, RGW_ATTR_CRYPT_CONTEXT);
+    ZeroPoolDocument d { rapidjson::kObjectType };
+    auto &allocator { d.GetAllocator() };
+    bufferlist secret_bl;
+
+    add_name_val_to_obj("context", context, d, allocator);
+    add_name_val_to_obj("ciphertext", wrapped_key, d, allocator);
+    rapidjson::StringBuffer buf;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
+    if (!d.Accept(writer)) {
+      ldout(cct, 0) << "ERROR: can't make json for vault" << dendl;
+      return -EINVAL;
+    }
+    std::string post_data { buf.GetString() };
+
+    int res = send_request("POST", "/decrypt/", key_id,
+	post_data, secret_bl);
+    if (res < 0) {
+      return res;
+    }
+
+    ldout(cct, 20) << "Parse response into JSON Object" << dendl;
+
+    secret_bl.append('\0');
+    rapidjson::StringStream isw(secret_bl.c_str());
+    d.SetNull();
+    d.ParseStream<>(isw);
+
+    if (d.HasParseError()) {
+      ldout(cct, 0) << "ERROR: Failed to parse JSON response from Vault: "
+	 << rapidjson::GetParseError_En(d.GetParseError()) << dendl;
+      return -EINVAL;
+    }
+    secret_bl.zero();
+
+    if (!d.IsObject()) {
+      ldout(cct, 0) << "ERROR: response from Vault is not an object" << dendl;
+      return -EINVAL;
+    }
+    {
+      auto data_itr { d.FindMember("data") };
+      if (data_itr == d.MemberEnd()) {
+	ldout(cct, 0) << "ERROR: no .data in response from Vault" << dendl;
+        return -EINVAL;
+      }
+      auto plaintext_itr { data_itr->value.FindMember("plaintext") };
+      if (plaintext_itr == data_itr->value.MemberEnd()) {
+	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      auto &plaintext_v { plaintext_itr->value };
+      if (!plaintext_v.IsString()) {
+	ldout(cct, 0) << "ERROR: .data.plaintext not a string in response from Vault" << dendl;
+	return -EINVAL;
+      }
+      return decode_secret(plaintext_v.GetString(), actual_key);
+    }
+  }
+
+  int make_kek_s3(std::string key_id)
+  {
+    bufferlist secret_bl;
+    int res = send_request("POST", "/keys/", key_id,
+	string{}, secret_bl);
+
+    ldout(cct, 20) << "Generate KEK Response: " << res << dendl;
+    return res;
+  }
+#endif
+};
+
 
 class TransitSecretEngine: public VaultSecretEngine {
 public:
@@ -942,8 +1313,9 @@ static int make_actual_key_from_cryptex(CephContext *cct,
                                      std::string& actual_key)
 {
     CryptexContext kctx { cct };
-    //return get_actual_key_from_vault(cct, kctx, attrs, actual_key, true);
+    CryptexSecretEngine engine(cct, kctx);
     return 0;
+    //return engine.make_actual_key(attrs, actual_key);
 }
 
 static int make_actual_key_from_vault(CephContext *cct,
@@ -1061,33 +1433,7 @@ public:
 };
 const std::string SseS3Context::sse_s3_secret_engine = "transit";
 
-class CryptexContext : public SSEContext {
-  CephContext *cct;
-public:
-  CryptexContext(CephContext*_cct) : cct{_cct} {};
-  ~CryptexContext() override {};
-  const std::string & backend() override {
-   return cct->_conf->rgw_crypt_sse_s3_backend;
-  };
-  const std::string & addr() override {
-    return cct->_conf->rgw_cryptex_sse_s3_addr;
-  };
-  const std::string & auth() override {
-    return cct->_conf->rgw_cryptex_sse_s3_auth;
-  };
-  const std::string & prefix() override {
-    return cct->_conf->rgw_cryptex_sse_s3_prefix;
-  };
-  const std::string & authn_addr() {
-    return cct->_conf->rgw_cryptex_authn_addr;
-  };
-  const std::string & authn_client_id() {
-    return cct->_conf->rgw_cryptex_authn_client_id;
-  };
-  const std::string & authn_client_secret() {
-    return cct->_conf->rgw_cryptex_authn_client_secret;
-  };
-};
+
 
 int reconstitute_actual_key_from_kms(CephContext *cct,
                             map<string, bufferlist>& attrs,
