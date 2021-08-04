@@ -515,16 +515,44 @@ protected:
     return 0;
   }
 */
+  int send_request(const char *method, std::string_view infix,
+    std::string_view key_id,
+    const std::string& postdata,
+    bufferlist &secret_bl)
+  {
+    string vault_token = "";
+    if (RGW_SSE_KMS_VAULT_AUTH_TOKEN == kctx.auth()){
+      ldout(cct, 0) << "Loading Vault Token from filesystem: " << kctx.token_file() << dendl;
+    }
+
+    std::string secret_url = kctx.addr();
+    if (secret_url.empty()) {
+      ldout(cct, 0) << "ERROR: Vault address not set in rgw_crypt_vault_addr" << dendl;
+      return -EINVAL;
+    }
+
+    ldout(cct, 0) << "PRIYA: Cryptex Addr: " << kctx.addr() << dendl;
+    ldout(cct, 0) << "PRIYA: Prefix: " << kctx.prefix() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn addr: " << kctx.authn_addr() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn client id: " << kctx.authn_client_id() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn client secret: " << kctx.authn_client_secret() << dendl;
+    concat_url(secret_url, kctx.prefix());
+    concat_url(secret_url, std::string(infix));
+    concat_url(secret_url, std::string(key_id));
+    ldout(cct, 0) << "PRIYA: Secret URL " << secret_url << dendl;
+    return -EINVAL;
+  }
+
 public:
 
   CryptexSecretEngine(CephContext *_c, CryptexContext & _k) : cct(_c), kctx(_k) {
     string vault_namespace = kctx.k_namespace();
     if (!vault_namespace.empty()){
-      ldout(cct, 20) << "Vault Namespace: " << vault_namespace << dendl;
+      ldout(cct, 20) << "PRIYA: Vault Namespace: " << vault_namespace << dendl;
     }
     string authn_addr = kctx.authn_addr();
     if (!authn_addr.empty()){
-      ldout(cct, 20) << "Authn Addr: " << authn_addr << dendl;
+      ldout(cct, 20) << "PRIYA: Authn Addr: " << authn_addr << dendl;
     }
 
   }
@@ -532,6 +560,7 @@ public:
   int get_key(std::string_view key_id, std::string& actual_key){
     return 0;
   }
+
 #if 0
   int make_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
   {
@@ -543,7 +572,6 @@ public:
 	jq: .data.ciphertext	-> (to-be) named attribute
     return decode_secret(json_obj, actual_key)
 */
-    std::string context = get_str_attribute(attrs, RGW_ATTR_CRYPT_CONTEXT);
     ZeroPoolDocument d { rapidjson::kObjectType };
     auto &allocator { d.GetAllocator() };
     bufferlist secret_bl;
@@ -681,7 +709,7 @@ public:
       return decode_secret(plaintext_v.GetString(), actual_key);
     }
   }
-
+#endif
   int make_kek_s3(std::string key_id)
   {
     bufferlist secret_bl;
@@ -691,7 +719,6 @@ public:
     ldout(cct, 20) << "Generate KEK Response: " << res << dendl;
     return res;
   }
-#endif
 };
 
 
@@ -1308,6 +1335,13 @@ static int get_actual_key_from_vault(CephContext *cct,
   }
 }
 
+static int generate_kek_cryptex(CephContext *cct, string kek_id)
+{
+    CryptexContext kctx { cct };
+    CryptexSecretEngine engine(cct, kctx);
+    return engine.make_kek_s3(kek_id);
+}
+
 static int make_actual_key_from_cryptex(CephContext *cct,
                                      map<string, bufferlist>& attrs,
                                      std::string& actual_key)
@@ -1518,6 +1552,10 @@ int generate_kek_sse_s3(CephContext *cct, string kek_id)
 {
   SseS3Context kctx { cct };
   const std::string kms_backend { kctx.backend() };
+  if (RGW_SSE_KMS_BACKEND_CRYPTEX == kms_backend) {
+    ldout(cct, 0) << "INFO: generate_kek for  " << kms_backend << dendl;
+    return generate_kek_cryptex(cct, kek_id);
+  }
   if (RGW_SSE_KMS_BACKEND_VAULT != kms_backend) {
     ldout(cct, 0) << "ERROR: Unsupported rgw_crypt_s3_backend: " << kms_backend << dendl;
     return -EINVAL;

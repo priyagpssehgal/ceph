@@ -2792,7 +2792,7 @@ options:
   services:
   - rgw
   see_also:
-  - rgw_cryptex_sse_s3_backend
+  - rgw_crypt_sse_s3_backend
   - rgw_cryptex_sse_s3_auth
   - rgw_cryptex_sse_s3_addr
   with_legacy: true
