@@ -380,7 +380,7 @@ class CryptexSecretEngine: public SecretEngine {
 protected:
   CephContext *cct;
   CryptexContext & kctx;
-/*
+
   int load_token_from_file(std::string *vault_token)
   {
 
@@ -425,7 +425,6 @@ protected:
   }
 
   int send_request(const char *method, std::string_view infix,
-    std::string_view key_id,
     const std::string& postdata,
     bufferlist &secret_bl)
   {
@@ -444,10 +443,15 @@ protected:
       ldout(cct, 0) << "ERROR: Vault address not set in rgw_crypt_vault_addr" << dendl;
       return -EINVAL;
     }
-
+    ldout(cct, 0) << "PRIYA: Prefix: " << kctx.prefix() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn addr: " << kctx.authn_addr() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn client id: " << kctx.authn_client_id() << dendl;
+    ldout(cct, 0) << "PRIYA: Authn client secret: " << kctx.authn_client_secret() << dendl;
+    ldout(cct, 0) << "PRIYA: Token: " << vault_token << dendl;
     concat_url(secret_url, kctx.prefix());
     concat_url(secret_url, std::string(infix));
-    concat_url(secret_url, std::string(key_id));
+    ldout(cct, 0) << "PRIYA: Secret URL " << secret_url << dendl;
+
 
     RGWHTTPTransceiver secret_req(cct, method, secret_url, &secret_bl);
 
@@ -456,30 +460,14 @@ protected:
       secret_req.set_send_length(postdata.length());
     }
 
-    secret_req.append_header("X-Vault-Token", vault_token);
     if (!vault_token.empty()){
-      secret_req.append_header("X-Vault-Token", vault_token);
+      secret_req.append_header("Authorization", vault_token);
       vault_token.replace(0, vault_token.length(), vault_token.length(), '\000');
     }
 
-    string vault_namespace = kctx.k_namespace();
-    if (!vault_namespace.empty()){
-      ldout(cct, 20) << "Vault Namespace: " << vault_namespace << dendl;
-      secret_req.append_header("X-Vault-Namespace", vault_namespace);
-    }
-
+    secret_req.append_header("Content-Type", "application/json");
     secret_req.set_verify_ssl(kctx.verify_ssl());
 
-    if (!kctx.ssl_cacert().empty()) {
-      secret_req.set_ca_path(kctx.ssl_cacert());
-    }
-
-    if (!kctx.ssl_clientcert().empty()) {
-      secret_req.set_client_cert(kctx.ssl_clientcert());
-    }
-    if (!kctx.ssl_clientkey().empty()) {
-      secret_req.set_client_key(kctx.ssl_clientkey());
-    }
 
     res = secret_req.process(null_yield);
     if (res < 0) {
@@ -498,7 +486,7 @@ protected:
 
     return res;
   }
-
+/*
   int send_request(std::string_view key_id, bufferlist &secret_bl)
   {
     return send_request("GET", "", key_id, string{}, secret_bl);
@@ -514,7 +502,6 @@ protected:
     memset(encoded.data(), 0, encoded.length());
     return 0;
   }
-*/
   int send_request(const char *method, std::string_view infix,
     std::string_view key_id,
     const std::string& postdata,
@@ -542,7 +529,7 @@ protected:
     ldout(cct, 0) << "PRIYA: Secret URL " << secret_url << dendl;
     return -EINVAL;
   }
-
+*/
 public:
 
   CryptexSecretEngine(CephContext *_c, CryptexContext & _k) : cct(_c), kctx(_k) {
@@ -713,8 +700,23 @@ public:
   int make_kek_s3(std::string key_id)
   {
     bufferlist secret_bl;
-    int res = send_request("POST", "/keys/", key_id,
-	string{}, secret_bl);
+    std::string crypt_namespace = kctx.k_namespace();
+    ZeroPoolDocument d { rapidjson::kObjectType };
+    auto &allocator { d.GetAllocator() };
+
+    add_name_val_to_obj("keyspace", crypt_namespace, d, allocator);
+    add_name_val_to_obj("name", key_id, d, allocator);
+
+    rapidjson::StringBuffer buf;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
+    if (!d.Accept(writer)) {
+      ldout(cct, 0) << "ERROR: can't make json for vault" << dendl;
+      return -EINVAL;
+    }
+    std::string post_data { buf.GetString() };
+    ldout(cct, 20) << "Post Data" << post_data << dendl;
+
+    int res = send_request("POST", string{}, post_data, secret_bl);
 
     ldout(cct, 20) << "Generate KEK Response: " << res << dendl;
     return res;
