@@ -1120,7 +1120,8 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	    return -EINVAL;
 	  }
 
-	  std::string_view key_id = kek_iter->second.to_str();
+	  //std::string_view key_id = kek_iter->second.to_str();
+	  std::string_view key_id =  s->bucket->get_info().owner.id;
 	  ldpp_dout(s, 5) << "Found KEK ID: " << key_id << dendl;
 	  std::string key_selector = create_random_key_selector(s->cct);
 

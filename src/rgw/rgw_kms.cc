@@ -157,6 +157,17 @@ add_name_val_to_obj(const char *n, std::string &v, rapidjson::GenericValue<E,A> 
   add_name_val_to_obj(ns, v, d, allocator);
 }
 
+template<typename E, typename A = ZeroPoolAllocator>
+static inline void
+add_name_val_to_obj(const char *n, const char *v, rapidjson::GenericValue<E,A> &d,
+  A &allocator)
+{
+  std::string ns{n, strlen(n) };
+  std::string vs{v, strlen(v) };
+  add_name_val_to_obj(ns, vs, d, allocator);
+}
+
+
 typedef std::map<std::string, std::string> EngineParmMap;
 
 
@@ -471,7 +482,8 @@ protected:
 
     res = secret_req.process(null_yield);
     if (res < 0) {
-      ldout(cct, 0) << "ERROR: Request to Vault failed with error " << res << dendl;
+      ldout(cct, 0) << "ERROR: Request to Vault failed with error " << res <<
+      " and HTTP status " << secret_req.get_http_status() << dendl;
       return res;
     }
 
@@ -486,11 +498,6 @@ protected:
 
     return res;
   }
-/*
-  int send_request(std::string_view key_id, bufferlist &secret_bl)
-  {
-    return send_request("GET", "", key_id, string{}, secret_bl);
-  }
 
   int decode_secret(std::string encoded, std::string& actual_key){
     try {
@@ -502,6 +509,12 @@ protected:
     memset(encoded.data(), 0, encoded.length());
     return 0;
   }
+/*
+  int send_request(std::string_view key_id, bufferlist &secret_bl)
+  {
+    return send_request("GET", "", key_id, string{}, secret_bl);
+  }
+
   int send_request(const char *method, std::string_view infix,
     std::string_view key_id,
     const std::string& postdata,
@@ -548,22 +561,21 @@ public:
     return 0;
   }
 
-#if 0
   int make_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
   {
     std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
 /*
-	data: {context }
-	post to prefix + /datakey/plaintext/ + key_id
-	jq: .data.plaintext	-> key
-	jq: .data.ciphertext	-> (to-be) named attribute
+	data: {"bits" : 256 }
+	post to prefix + /namespace::key_id/envelopkey
+	jq: .response.plaintext	-> key
+	jq: .response.ciphertext	-> (to-be) named attribute
     return decode_secret(json_obj, actual_key)
 */
     ZeroPoolDocument d { rapidjson::kObjectType };
     auto &allocator { d.GetAllocator() };
     bufferlist secret_bl;
 
-    add_name_val_to_obj("context", context, d, allocator);
+    add_name_val_to_obj("bits", "256", d, allocator);
     rapidjson::StringBuffer buf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
     if (!d.Accept(writer)) {
@@ -572,8 +584,12 @@ public:
     }
     std::string post_data { buf.GetString() };
 
-    int res = send_request("POST", "/datakey/plaintext/", key_id,
-	post_data, secret_bl);
+    std::string infix = kctx.k_namespace();
+    infix.append("::");
+    infix.append(key_id);
+    infix.append("/envelopKey");
+    ldout(cct, 20) << "PRIYA: Infix " << infix << dendl;
+    int res = send_request("POST", infix, post_data, secret_bl);
     if (res < 0) {
       return res;
     }
@@ -597,19 +613,28 @@ public:
       return -EINVAL;
     }
     {
-      auto data_itr { d.FindMember("data") };
+      auto data_itr { d.FindMember("response") };
       if (data_itr == d.MemberEnd()) {
 	ldout(cct, 0) << "ERROR: no .data in response from Vault" << dendl;
         return -EINVAL;
       }
       auto ciphertext_itr { data_itr->value.FindMember("ciphertext") };
       auto plaintext_itr { data_itr->value.FindMember("plaintext") };
+      auto error_itr { data_itr->value.FindMember("errorMsg") };
       if (ciphertext_itr == data_itr->value.MemberEnd()) {
-	ldout(cct, 0) << "ERROR: no .data.ciphertext in response from Vault" << dendl;
+	ldout(cct, 0) << "ERROR: no .data.ciphertext in response from Cryptex" << dendl;
 	return -EINVAL;
       }
       if (plaintext_itr == data_itr->value.MemberEnd()) {
-	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Vault" << dendl;
+	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Cryptex" << dendl;
+	return -EINVAL;
+      }
+      if (error_itr == data_itr->value.MemberEnd()) {
+	ldout(cct, 0) << "INFO: no error in response from Cryptex" << dendl;
+      } else {
+	auto &error_msg { error_itr->value };
+	ldout(cct, 0) << "PRIYA: Error Message from Cryptex: " <<
+		error_msg.GetString() << dendl;
 	return -EINVAL;
       }
       auto &ciphertext_v { ciphertext_itr->value };
@@ -627,6 +652,7 @@ public:
     }
   }
 
+#if 0
   int reconstitute_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
   {
     std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
@@ -721,6 +747,17 @@ public:
     ldout(cct, 20) << "Generate KEK Response: " << res << dendl;
     return res;
   }
+  /*
+  int make_kek_s3(std::string key_id)
+  {
+    bufferlist secret_bl;
+
+    int res = send_request("GET", "/D42::mykey3/metadata", string{}, secret_bl);
+
+    ldout(cct, 20) << "Generate KEK Response: " << res << dendl;
+    return res;
+  }
+*/
 };
 
 
@@ -1350,8 +1387,7 @@ static int make_actual_key_from_cryptex(CephContext *cct,
 {
     CryptexContext kctx { cct };
     CryptexSecretEngine engine(cct, kctx);
-    return 0;
-    //return engine.make_actual_key(attrs, actual_key);
+    return engine.make_actual_key(attrs, actual_key);
 }
 
 static int make_actual_key_from_vault(CephContext *cct,
