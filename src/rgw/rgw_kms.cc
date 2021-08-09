@@ -575,7 +575,7 @@ public:
     auto &allocator { d.GetAllocator() };
     bufferlist secret_bl;
 
-    add_name_val_to_obj("bits", "256", d, allocator);
+    add_name_val_to_obj("bits", "128", d, allocator);
     rapidjson::StringBuffer buf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
     if (!d.Accept(writer)) {
@@ -652,25 +652,22 @@ public:
     }
   }
 
-#if 0
   int reconstitute_actual_key(map<string, bufferlist>& attrs, std::string& actual_key)
   {
     std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
     std::string wrapped_key = get_str_attribute(attrs, RGW_ATTR_CRYPT_DATAKEY);
 /*
 	.data.ciphertext <- (to-be) named attribute
-	data: {context ciphertext}
-	post to prefix + /decrypt/ + key_id
+	data: {ciphertext}
+	post to prefix + /decrypt/ 
 	jq: .data.plaintext
     return decode_secret(json_obj, actual_key)
 */
-    std::string context = get_str_attribute(attrs, RGW_ATTR_CRYPT_CONTEXT);
     ZeroPoolDocument d { rapidjson::kObjectType };
     auto &allocator { d.GetAllocator() };
     bufferlist secret_bl;
 
-    add_name_val_to_obj("context", context, d, allocator);
-    add_name_val_to_obj("ciphertext", wrapped_key, d, allocator);
+    add_name_val_to_obj("data", wrapped_key, d, allocator);
     rapidjson::StringBuffer buf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
     if (!d.Accept(writer)) {
@@ -679,12 +676,12 @@ public:
     }
     std::string post_data { buf.GetString() };
 
-    int res = send_request("POST", "/decrypt/", key_id,
-	post_data, secret_bl);
+    int res = send_request("POST", "/decrypt", post_data, secret_bl);
     if (res < 0) {
       return res;
     }
 
+    ldout(cct, 20) << "PRIYA: Decrypting for Key ID " << key_id << dendl;
     ldout(cct, 20) << "Parse response into JSON Object" << dendl;
 
     secret_bl.append('\0');
@@ -700,29 +697,40 @@ public:
     secret_bl.zero();
 
     if (!d.IsObject()) {
-      ldout(cct, 0) << "ERROR: response from Vault is not an object" << dendl;
+      ldout(cct, 0) << "ERROR: response from Cryptex is not an object" << dendl;
       return -EINVAL;
     }
     {
-      auto data_itr { d.FindMember("data") };
+      auto data_itr { d.FindMember("response") };
       if (data_itr == d.MemberEnd()) {
-	ldout(cct, 0) << "ERROR: no .data in response from Vault" << dendl;
+	ldout(cct, 0) << "ERROR: no .data in response from Cryptex" << dendl;
         return -EINVAL;
       }
-      auto plaintext_itr { data_itr->value.FindMember("plaintext") };
+
+      auto error_itr { data_itr->value.FindMember("errorMsg") };
+      if (error_itr == data_itr->value.MemberEnd()) {
+	ldout(cct, 0) << "INFO: no error in response from Cryptex" << dendl;
+      } else {
+	auto &error_msg { error_itr->value };
+	ldout(cct, 0) << "PRIYA: Error Message from Cryptex: " <<
+		error_msg.GetString() << dendl;
+	return -EINVAL;
+      }
+
+      auto plaintext_itr { data_itr->value.FindMember("data") };
       if (plaintext_itr == data_itr->value.MemberEnd()) {
-	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Vault" << dendl;
+	ldout(cct, 0) << "ERROR: no .data.plaintext in response from Cryptex" << dendl;
 	return -EINVAL;
       }
       auto &plaintext_v { plaintext_itr->value };
       if (!plaintext_v.IsString()) {
-	ldout(cct, 0) << "ERROR: .data.plaintext not a string in response from Vault" << dendl;
+	ldout(cct, 0) << "ERROR: .data.plaintext not a string in response from Cryptex" << dendl;
 	return -EINVAL;
       }
       return decode_secret(plaintext_v.GetString(), actual_key);
     }
   }
-#endif
+
   int make_kek_s3(std::string key_id)
   {
     bufferlist secret_bl;
@@ -1390,6 +1398,15 @@ static int make_actual_key_from_cryptex(CephContext *cct,
     return engine.make_actual_key(attrs, actual_key);
 }
 
+static int reconstitute_actual_key_from_cryptex(CephContext *cct,
+                                     map<string, bufferlist>& attrs,
+                                     std::string& actual_key)
+{
+    CryptexContext kctx { cct };
+    CryptexSecretEngine engine(cct, kctx);
+    return engine.reconstitute_actual_key(attrs, actual_key);
+}
+
 static int make_actual_key_from_vault(CephContext *cct,
                                      SSEContext & kctx,
                                      map<string, bufferlist>& attrs,
@@ -1560,6 +1577,10 @@ int reconstitute_actual_key_from_sse_s3(CephContext *cct,
 
   ldout(cct, 20) << "Getting SSE-S3  encryption key for key " << key_id << dendl;
   ldout(cct, 20) << "SSE-KMS backend is " << kms_backend << dendl;
+  if (RGW_SSE_KMS_BACKEND_CRYPTEX == kms_backend) {
+    ldout(cct, 0) << "INFO: Backend preparing sse_s3 key  " << kms_backend << dendl;
+    return reconstitute_actual_key_from_cryptex(cct, attrs, actual_key);;
+  }
 
   if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend) {
     return reconstitute_actual_key_from_vault(cct, kctx, attrs, actual_key);
