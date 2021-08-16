@@ -575,7 +575,7 @@ public:
     auto &allocator { d.GetAllocator() };
     bufferlist secret_bl;
 
-    add_name_val_to_obj("bits", "128", d, allocator);
+    add_name_val_to_obj("bits", "256", d, allocator);
     rapidjson::StringBuffer buf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
     if (!d.Accept(writer)) {
