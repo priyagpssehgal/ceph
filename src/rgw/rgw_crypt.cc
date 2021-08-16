@@ -1099,9 +1099,9 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
       ldpp_dout(s, 5) << "Found RGW_ATTR_BUCKET_ENCRYPTION_POLICY on "
 	      << s->bucket_name << dendl;
 
-      bufferlist::const_iterator iter{&aiter->second};
+      RGWBucketEncryptionConfig bucket_encryption_conf;
       try {
-        RGWBucketEncryptionConfig bucket_encryption_conf;
+	bufferlist::const_iterator iter{&aiter->second};
 	bucket_encryption_conf.decode(iter);
 	if (bucket_encryption_conf.sse_algorithm() == "AES256") {
 	  ldpp_dout(s, 5) << "RGW_ATTR_BUCKET_ENCRYPTION ALGO: "
@@ -1161,6 +1161,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	}
       } catch (const buffer::error& e) {
         ldpp_dout(s, 5) << __func__ <<  "decode bucket_encryption_conf failed" << dendl;
+	return -EIO;
       }
     }
 
