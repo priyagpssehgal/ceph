@@ -1161,7 +1161,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	}
       } catch (const buffer::error& e) {
         ldpp_dout(s, 5) << __func__ <<  "decode bucket_encryption_conf failed" << dendl;
-	return -EIO;
+        return -EIO;
       }
     }
 
